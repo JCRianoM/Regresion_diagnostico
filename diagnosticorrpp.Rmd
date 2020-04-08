@@ -1,0 +1,978 @@
+---
+title: "Taller # 3"
+subtitle: "Diagnóstico de regresión lineal múltiple"
+author: "Julián Camilo Riaño Moreno"
+date: "`r format(Sys.Date(), '%A, %B %d, %Y')`"
+output:
+  pdf_document: 
+    keep_tex: yes
+    toc: yes
+    toc_depth: 3
+  html_document: 
+    keep_md: true
+    toc: yes
+    toc_float: true
+    code_folding: hide
+  keep_tex: yes
+  word_document: default
+  fig_cap: yes
+header-includes:
+- \usepackage{float}
+- \floatplacement{figure}{H}
+---
+
+```{r setup, include=FALSE}
+# define knitr options
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(echo = TRUE, fig.pos= "h")
+```
+
+```{r, include=FALSE}
+
+# instalar paquetes. 
+library(tidyverse)
+library(gridExtra)
+library(kableExtra)
+library(knitr)
+library(ggcorrplot)
+library(ggthemes)
+library(GGally)
+library(lmtest)##paquete para validación de estimadores de errores. 
+library(leaps)##paquete para selección de modelos a través de estadisticos BIC, CP, R2adj
+library(pander) ##paquete para tablas pandoc
+library(reshape2)##arreglar imagenes
+library(ggrepel)
+
+# cargar el archivo de trabajo desde un CSV
+pricepp<- read.csv2('preciosprop.csv', dec = '.')
+namescol <- c('precioventa', 'impuestos', 'num_banos', 'tamano_lote', 'espac_vital', 'num_puestos_gar', 
+             'num_hab', 'num_dorm', 'edad_hogar', 'cant_chimen')
+colnames(pricepp) <- namescol
+pricepp <- as.data.frame(pricepp)
+```
+
+```{r funciones para modificar heatmap, include=FALSE}
+# Get lower triangle of the correlation matrix
+get_lower_tri<-function(cormat){
+    cormat[upper.tri(cormat)] <- NA
+    return(cormat)
+}
+# Get upper triangle of the correlation matrix
+get_upper_tri <- function(cormat){
+    cormat[lower.tri(cormat)]<- NA
+    return(cormat)
+}
+
+```
+
+```{r función GRÁFICA para observaciones INFLUYENTES, include=FALSE}
+# Gráfica de Observaciones influyentes
+Obs_influy.graph <- function(objeto){
+    y <- objeto$residuals + fitted(objeto)
+    n <- length(y)
+    h <- lm.influence(objeto)$hat
+    p <- ncol(model.matrix(objeto))
+    s <- sqrt(deviance(objeto)/(n-p))
+    ti <- objeto$residuals/(s*sqrt(1-h))
+    DC <- (ti^2/p) * h/(1-h)
+    maxy <- max(max(DC),3*mean(DC))
+    infdb<- data.frame(DC)
+    id <- 1:nrow(infdb)
+    infdblab <- cbind(id, infdb)
+    ggplot(infdblab, aes(x=id, y=DC, color = ifelse(DC>3*mean(DC), "Inf", "No inf")))+ 
+        scale_color_manual(name="Obs. \nInfluyentes", values = c("firebrick","gray20"))+
+        ggtitle("Observaciones influyentes")+
+        theme(plot.title = element_text(hjust = 0.5))+
+        ylim(c(0, maxy))+ 
+        ylab('Distancias de Cook')+
+        xlab('Índice')+
+        geom_point(size=2) +
+        geom_segment(aes(xend = id, yend = 0), alpha = 0.5, linetype= 3)+
+        geom_abline(intercept = 3*mean(DC),
+                    slope = 0, 
+                    colour = 'blue', 
+                    size = 1, 
+                    linetype="dashed")+
+        geom_label_repel(aes (label = ifelse(DC>3*mean(DC),
+                                             as.numeric(id),
+                                             '')), 
+                         size          = 5.0, 
+                         box.padding   = 0.5,
+                         point.padding = 0.5,
+                         force         = 100,
+                         segment.size  = 0.5,
+                         segment.color = "grey50",
+                         arrow = arrow (length = unit (0.025, "npc"), 
+                                        type = "closed", 
+                                        ends = "last", angle = 30))+
+        theme_minimal()
+    
+}
+```
+
+```{r función para EXTRACCIÓN de observaciones influyentes, include=FALSE}
+Obs_influ.extract <- function(objeto){
+    y <- objeto$residuals + fitted(objeto)
+    n <- length(y)
+    h <- lm.influence(objeto)$hat
+    p <- ncol(model.matrix(objeto))
+    s <- sqrt(deviance(objeto)/(n-p))
+    ti <- objeto$residuals/(s*sqrt(1-h))
+    DC <- (ti^2/p) * h/(1-h)
+    maxy <- max(max(DC),3*mean(DC))
+    infl.glob=ifelse(DC>3*mean(DC),TRUE,FALSE)
+    identificador=1:length(y)
+    identificador[infl.glob]
+}
+```
+
+```{r función para GRÁFICA de LEVERAGE, include=FALSE}
+# Gráfica de alto leverage.
+Leverage.graph <- function(objeto){
+    y <- objeto$residuals + fitted(objeto)
+    H <- lm.influence(objeto)$hat
+    X <- model.matrix(objeto)
+    Hdb<- data.frame(H)
+    id <- 1:nrow(Hdb)
+    Hdblab <- cbind(id, Hdb)
+    maxy <- max(max(H),2*mean(H))
+    ggplot(Hdb, aes(x=id, y=H, color = ifelse(H>2*mean(H), "Con", "Sin")))+ 
+        scale_color_manual(name="Alto Leverage", values = c("firebrick","gray20"))+
+        ggtitle("Leverage para los puntos de residuales")+
+        theme(plot.title = element_text(hjust = 0.5))+
+        ylim(c(0, maxy))+ 
+        ylab('h')+
+        xlab('Índice')+
+        geom_point(size=2) +
+        geom_segment(aes(xend = id, yend = 0), alpha = 0.5, linetype= 3)+
+        geom_abline(intercept = 2*mean(H),
+                    slope = 0, 
+                    colour = 'blue', 
+                    size = 1, 
+                    linetype="dashed") +
+        geom_label_repel(aes (label = ifelse(H>(2*mean(H)),
+                                             as.numeric(id), 
+                                             '')),
+                         size          = 5.0,
+                         box.padding   = 0.5,
+                         point.padding = 0.5,
+                         force         = 100,
+                         segment.size  = 0.5,
+                         segment.color = "grey50",
+                         arrow = arrow (length = unit (0.025, "npc"), 
+                                        type = "closed", 
+                                        ends = "last", angle = 30))+
+        theme_minimal()
+}
+```
+
+```{r función para EXTRACCIÓN de observaciones LEVERAGE, include=FALSE}
+## función de extracción de leverage
+Leverage.extract <- function(objeto){
+    y <- objeto$residuals + fitted(objeto)
+    H <- lm.influence(objeto)$hat
+    X <- model.matrix(objeto)
+    maxy <- max(max(H),2*mean(H))
+    alto.leverage=ifelse(H>2*mean(H),TRUE,FALSE)
+    identificador=1:length(y)
+    identificador[alto.leverage]
+}
+```
+
+```{r función para GRÁFICA de observaciones EXTREMAS, include=FALSE}
+# Gráfica de Observaciones extremas
+Resobsext.graph <- function(objeto){
+    r <- rstudent(objeto)
+    maxy <- max(max(r),3)
+    miny <- min(min(r),-3)
+    fitmodel <- fitted(objeto)
+    Hddext<- data.frame(fitmodel, r)
+    idext <- 1:nrow(Hddext)
+    Hdblabext <- cbind(idext, Hddext)
+    ggplot(Hddext, aes(x=fitmodel, y=r, color = ifelse(r>2 | r<(-2), "Si extrem", "No extrem")))+ 
+        scale_color_manual(name="Valores \nextremos", values = c("gray20","firebrick"))+
+        ggtitle("Observaciones extremas en la respuesta")+
+        theme(plot.title = element_text(hjust = 0.5))+
+        ylim(c(miny,maxy))+ 
+        ylab('Residuo estudentizado')+
+        xlab('Media estimada')+
+        geom_point(size=2) +
+        geom_segment(aes(xend = fitmodel, yend = 0), alpha = 0.5, linetype= 3)+
+        geom_abline(intercept = 2,
+                    slope = 0, 
+                    colour = 'red', 
+                    size = 1, 
+                    linetype="dashed")+
+        geom_abline(intercept = 0,
+                    slope = 0, 
+                    colour = 'blue', 
+                    size = 1)+
+        geom_abline(intercept = -2,
+                    slope = 0, 
+                    colour = 'red', 
+                    size = 1, 
+                    linetype="dashed")+
+        geom_label_repel(aes (label = ifelse(r>2 | r<(-2),
+                                             as.numeric(idext),
+                                             '')), 
+                         size          = 5.0, 
+                         box.padding   = 0.5,
+                         point.padding = 0.5,
+                         force         = 100,
+                         segment.size  = 0.5,
+                         segment.color = "grey50",
+                         arrow = arrow (length = unit (0.025, "npc"), 
+                                        type = "closed", 
+                                        ends = "last", angle = 30))+
+        theme_minimal()
+}
+
+```
+
+```{r función para EXTRACCIÓN de observaciones EXTREMAS, include=FALSE}
+obsExtreme.extract <- function(objeto){
+    y <- objeto$residuals + fitted(objeto)
+    r <- rstudent(objeto)
+    maxy <- max(max(r),3)
+    miny <- min(min(r),-3)
+    extremo.respuesta=ifelse(abs(r)>2,TRUE,FALSE)
+    identificador=1:length(y)
+    identificador[extremo.respuesta]
+}
+```
+
+\pagebreak
+
+# Descripción de las variables. 
+
+```{r creación de tabla de variables a utilizar, echo = FALSE, results='asis'}
+vardadas <- c('$y$', '$x_1$', '$x_2$', '$x_3$', '$x_4$', '$x_5$', '$x_6$', '$x_7$', '$x_8$', '$x_9$')
+def_var <- c('Precio de venta de la casa',
+             'Impuestos (local, escuela, condado)', 
+             'Numero de banos',
+             'Tamano de lote',
+             'Espacio vital', 
+             'Numero de puestos de garaje',
+             'Numero de habitaciones', 
+             'Numero de dormitorios', 
+             'Edad del hogar', 
+             'Cantidad de chimeneas')
+unidad <- c('x/1000', 'x/1000', '$n°$', '$ft^2$', '$ft^2$', '$n°$', '$n°$', '$n°$', 
+            'Anos', '$n°$')
+
+tip_var <- c('v_respuesta', 'v_regresora', 'v_regresora', 'v_regresora', 'v_regresora',
+             'v_regresora', 'v_regresora', 'v_regresora', 'v_regresora', 'v_regresora')
+dbnamescol <- c('precioventa', 'impuestos', 'num_banos', 'tamano_lote', 'espac_vital',
+                'num_puestos_gar', 'num_hab', 'num_dorm', 'edad_hogar', 'cant_chimen')
+
+names_df <- c('Variables dadas', 'Definicion', 'Tipo de variable (en modelo)',
+              'Nombre de variable (en la base de datos)', 'Unidad')
+df_modelo <- data.frame(vardadas, def_var, tip_var, dbnamescol, unidad)
+colnames(df_modelo) <- names_df
+
+pandoc.table(df_modelo, 
+             caption="Organizacion de las variables del taller#3", 
+             align = 'c', 
+             split.table = Inf) 
+```
+
+En la tabla 1. se describen las caracteristicas de las variables dadas para el ejercicio. Para ajustar las variables definidas se les asignó un nombre para la base de datos que corresponde a la columna "Nombre de variable (en la base de datos)". Además, se definió para este ejercicio la variable respuesta `precioventa`, la cual corresponde a una variable cuantitativa continua; las demás variables se definieron como variables regresoras (`impuestos`, `num_banos`, `tamano_lote`, `espac_vital`, `num_puestos_gar`, `num_hab`, `num_dorm`, `edad_hogar`, `cant_chimen`), de estas `num_banos`, `num_puestos_gar`, `num_hab`, `num_dorm`, `edad_hogar`, son consideradas variables cuantitativas discretas, las son variables cuantitativas continuas. 
+
+```{r distribuciones de las variables dadas, echo=FALSE, message=FALSE, fig.cap= 'Distribución de las variables dadas'}
+library(psych)
+multi.hist(x = pricepp, dcol = c("blue", "red"), dlty = c("dotted", "solid"),
+           main = "")
+```
+
+La figura 1, muestra la distribución de las 9 variables que serán análizadas en este documento. En esta figura se deja ver que la variable `num_banos` ($x_2$) al igual que la variable `cant_chimen` presentan múltiples datos extremos. Las demás variables presenta una distribución normal. 
+
+# Respuesta a la preguntas taller # 3
+
+## Problema
+
+Considere los datos de precios de la vivienda dados en la tabla 1. a. Ajuste
+un modelo de regresióon múultiple que relacione el precio de venta con los nueve
+regresores. segundo. Prueba de signifícación de la regresión. ¿Qué conclusiones
+puedes sacar?. Utilice las pruebas t para evaluar la contribución de cada
+regresor al modelo. Discute tus hallazgos.
+
+### Pregunta #1: Ajuste un modelo de regresión múltiple que relacione el precio de venta con los nueve variables regresoras.
+
+```{r heat map de correlaciones con ggcorrplot, echo=FALSE, message=FALSE, fig.cap= 'Mapa de calor de correlaciones entre variables', fig.width= 5, fig.height=4}
+### versión utilizando el THEME de ggplot
+###HEat map con ggplot
+PPcor <- round(cor(pricepp),2)
+melted_PPcor <- melt(PPcor)
+upper_triPP <- get_upper_tri(PPcor)
+
+# Melt the correlation matrix
+melted_PPcor2 <- melt(upper_triPP, na.rm = TRUE)
+
+ggheatmapPP <- ggplot(data = melted_PPcor2, aes(Var2, Var1, fill = value))+ 
+    geom_raster(color = "white")+
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                         midpoint = 0, limit = c(-1,1), space = "Lab",
+                         name="Correlación\nde Pearson") +
+    theme_minimal()+ 
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                     size = 10, hjust = 1))+
+    coord_fixed()
+
+ggheatmapPP <- ggheatmapPP + 
+    geom_text(aes(Var2, Var1, label = value), color = "black", size = 3) +
+    theme(
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks = element_blank(),
+        legend.justification = c(1, 0),
+        legend.position = c(0.55, 0.7),
+        legend.direction = "horizontal")+
+    guides(fill = guide_colorbar(barwidth = 6, barheight = 0.8,
+                                 title.position = "top", title.hjust = 0.5))
+
+print(ggheatmapPP)
+
+```
+
+
+Inicialmente se realizó un análisis de correlación de las variables dadas por medio del coeficiente de correlación de Pearson (coeficientes mostrados en la figura 2). A través de este examen se encontró que la variable regresora `impuestos` (cor=0.81) es la más correlacionada con la variable respuesta `precioventa`. Otras variables con alta correlación con la variable respuesta fueron, `num_banos` y `espac_vital` (cor=0.71), seguidas de `tamano_lote`(cor=0.65). Entre las variables regresoras se encuentran alta correlación entre `num_hab` y `num_dorm` (cor=0.87), seguidas de `espac_vital` con `num_banos` e `Impuestos`(cor=0.73). Las variables con menor correlación son `num_dorm` con `cant_chimen` y `num_puestos_gar`con `num_dorm`. 
+
+
+### Pregunta #2: Prueba de signicancia de la regresión. ¿Qué conclusiones puedes sacar?
+
+
+```{r modelo par las variables dadas, echo=FALSE, results='asis'}
+### correr modelo
+modelpricepp <- lm(precioventa ~ impuestos + num_banos + tamano_lote + espac_vital + num_puestos_gar +
+    num_hab + num_dorm + edad_hogar + cant_chimen, data=pricepp)
+Mod_spricepp <- summary(modelpricepp)
+ParMod_pricepp <- data.frame(Mod_spricepp$coefficients)
+colnames(ParMod_pricepp) <- c("Estimado", "ErrorStand", "$t-value$", "$p-value$")
+```
+
+
+Se elaboró un modelo de regresión original realizado entre las variable respuesta `precioventa` y las otras nueve variables regresoras. Para evaluar el modelo, se realizó un análisis de la $F$ de Fisher para el modelo que llamaremos original con 9 variable y un análisis de $R_{adj}^2$. 
+
+```{r F de fisher para el modelo, echo=FALSE, message=FALSE, results='asis'}
+Fstatmodel <- c(Mod_spricepp$fstatistic[1], Mod_spricepp$fstatistic[3], '7.694e-05')
+Fstatmodelcomp <- data.frame(matrix(nrow = 1, data = Fstatmodel))
+colnames(Fstatmodelcomp) <- c('$F_{stat}$', 'Grados_libertad', '$p-value$')
+
+pandoc.table(Fstatmodelcomp, caption = 'Estadistico $F$ de Fisher: significancia del modelo', align = 'r')
+```
+
+En la tabla 2. se encuentran los resultado de $F$ de fisher, para el análisis de la siguiente prueba de hipotesis:
+
+$$
+H_o: \beta_1 = \beta_2 =  ... =\beta_k = 0 \\ 
+$$
+
+$$
+H_1: \beta_j \neq 0 \ para \ cualquier  \ j \ dado
+$$
+
+El estadístico $F$ de Fisher se obtuvo con 14 grados de libertad, donde el $p-value$ demuestra significancia estadística, con lo que se rechaza la hipotesis nula. De tal forma, se puede inferir que almenos una de la variables regresoras ($\beta_i$) son diferentes de 0. 
+
+```{r Tabla de r2 y  r2 adj, echo = FALSE, results='asis'}
+R_2vectPP <-c(Mod_spricepp$r.squared, Mod_spricepp$adj.r.squared)
+NamesR2 <- c('$R^2$', '$R_{adj}^2$')
+R_2modtabPP <- data.frame(matrix(nrow = 1,data = R_2vectPP))
+colnames(R_2modtabPP) <- NamesR2
+pandoc.table(R_2modtabPP, 
+             caption = '$R^2$ y $R_{adj}^2$ para el modelo', 
+             align = 'c', 
+             split.table = Inf,
+             digits = 3)
+```
+
+Por otra parte, la tabla 3, muestra los resultados de los $R^2$ y $R_{adj}^2$ para el modelo de regresión original. Estos resultados ($R^2 \neq R_{adj}^2$). Para el análisis se tendrá en cuenta el $R_{adj}^2$ ya que es el menos sensible a la supresión o adición de variables.De manera que este resultado, permiten inferir que aproximadamente el 79% de la variabilidad de la variable respuesta (`precioventa`) puede ser explicado por las variables regresoras de este modelo; de manera que, la variabilidad restante puede ser consecuencia a otras variables no tenidas encuenta en el modelo o por azar. 
+
+
+```{r Coeficientes de confianza para modelo original, echo = FALSE, results='asis'}
+
+IntCfPP<- as.data.frame(confint(modelpricepp, level = 0.95)) ##por defecto es 95%. 
+colnames(IntCfPP) <- c("IC 2.5%", "IC 97.5%")
+rownames(IntCfPP) <- c('precioventa', 'impuestos', 'num_banos', 'tamano_lote',
+                        'espac_vital','num_puestos_gar', 'num_hab', 
+                        'num_dorm', 'edad_hogar', 'cant_chimen')
+pandoc.table(IntCfPP, 
+             caption = 'Intervalos de confianza del 95% para los parametros del modelo original', 
+             digits = 3)
+```
+
+La tabla 4. muestra los intervalos de confianza para los parametros del modelo original, destacándose la amplitud encontrada resultadas para las variables `cant_chimen`, `num_dorm` y  `num_hab`. 
+
+### Pregunta #3: Utilice las pruebas t para evaluar la contribución de cada variable regresora al modelo. Discute tus hallazgos.
+
+
+```{r stimdores, t-values y p-values, echo=FALSE, results='asis'}
+pandoc.table(ParMod_pricepp, 
+             caption= paste0('Estimaciones y ', '$t-values$', 
+                             ' para el modelo obtenido'), 
+             align = 'c', 
+             split.table = Inf,
+             digits = 3)
+```
+
+Los resultados mostrados en la tabla 5, donde se muestran las estimaciones del modelo original y sus $t-values$, muestran un estimado del intercepto (`precioventa`) un valor positivo $> 0$ (20.2); de manera que de estos resultados se puede deducir que algunos estimadores de las variables regresoras, pueden afectar el resultado de la variable respuesta. Al verificar los $t-values$ se observa que solo son significativas `num_banos` ($p - value < 0.05$). Las demás variables regresoras no son significativas ($p - value \geq 0.05$) para establecer su efecto sobre la variable respuesta en el modelo original. Con este modelo en una interpretación prudente solo es posible afirmar que un incremento en una unidad del numero de baños se puede incrementar 5.23/1000 dolares el precio de venta de la propiedad, siempre que las otras variables no cambien. 
+
+
+### Pregunta #4: Ajuste un nuevo modelo lineal que contenga sólo las variables regresoras que resultaron signifícativas en la prueba anterior.
+
+Dado los resultados anteriores se decide realizar un ajuste del modelo aplicando el método *stepwise* y aplicando los estadisticos $AIC$, $BIC$, $Cp$ y $R^2_{adj}$. 
+
+Le método $AIC$ (Akaike) fue realizado a través de la función `step`, con un método *stepwise* bidireccional *forward* y *reverse*, a partir de esta estratégia se obtuvo que el **"mejor modelo"** sería uno que incluyera únicamente 5 variables regresoras, a saber: `impuestos `, `num_banos`, `num_puestos_gar`, `edad_hogar`,   `cant_chimen`. 
+
+```{r elección del mejor modelo por AIC, echo=FALSE, message=FALSE, include=FALSE}
+### elegir el mejor modelo 
+modelAICpp <- step(object = modelpricepp, direction = "both", trace = 1)
+mods_bestAIC <- summary(modelAICpp)
+ParMods_bestAIC <- data.frame(mods_bestAIC$coefficients)
+colnames(ParMods_bestAIC) <- c("Estimado", "ErrorStand", "$t-value$", "$p-value$")
+```
+
+```{r elección del modelo por métodos; Cp, echo=FALSE, message=FALSE}
+### mejor modelo con método stepwise
+bestmodelp <- lm(formula = precioventa ~ impuestos + num_banos + num_puestos_gar + 
+       edad_hogar + cant_chimen, data = pricepp)
+```
+
+
+```{r elección del mejor modelo por otros métodos, echo=FALSE, message=FALSE}
+
+### selección del mejor modelo
+
+best_subsetPP <- regsubsets(precioventa ~ ., pricepp)
+###nvmax el número máximo que pueda arrojar el modelo.
+resultsPP <- summary(best_subsetPP)
+
+forwPP <- regsubsets(precioventa ~ ., pricepp, method = 'f')
+resultsFORWpp <- summary(forwPP)
+
+backPP <- regsubsets(precioventa ~ ., pricepp, method = 'b')
+resultsBACKpp <- summary(backPP)
+```
+
+
+```{r Gráfica de ESTADISTICOS para elección de mejor modelo, echo=FALSE, message=FALSE, fig.cap='Estadísticos para elección de mejor modelo: adj_R2, BIC, Cp', fig.width= 5, fig.height=4}
+
+## extract and plot results por método forward
+tibble(predictors = 1:8, 
+       adj_R2 =resultsPP$adjr2, 
+       cp = resultsPP$cp, 
+       BIC = resultsPP$bic) %>%
+    gather(statistic, value, -predictors) %>%
+    ggplot(aes(predictors, value, color = statistic)) +
+    xlab('Estadisticos predictores')+
+    ylab('Valores')+
+    geom_line(show.legend = F, size=1) +
+    geom_point(show.legend = T, size=2) +
+    facet_wrap(~ statistic, scales = 'free') +
+  theme_minimal()
+
+```
+
+Además se realizó un análisis utilizando otros estadisticos bajo el método *stepwise* para este caso se utilizó unicamente un direccionamiento *forward* o de introducción progresiva, con estas precisiones los resultados fueron similares al $AIC$ como se puede ver en la figura 3. Es de notar que Para el método $R^2_{adj}$ y $Cp$ muestran que el mejor modelo es el #5 que corresponde al mismo modelo obtenido por $AIC$. No obstante, estadistico $BIC$ muestra que el mejor modelo es el #2 esto es: `impuestos` y `num_banos`. Para efectos del desarrollo de esta actividad se tomará el modelo de 5 (que será designado como "*mejor modelo*") variables por la consistencia de resultados en los demás estadísticos. 
+
+### Pregunta #5: Interprete los parámetros estimados del nuevo modelo.
+
+
+```{r tabla de AIC coeficientes, echo=FALSE, message=FALSE, results='asis'}
+pandoc.table(ParMods_bestAIC, 
+             caption= paste('Estimadores, $t-values$ y significancia para el \nmejor
+                            modelo sugerido por AIC, Cp, y $r^2_{adj}$'), 
+             align = 'c', 
+             digits = 3)
+```
+
+La  tabla 6 muestra las estimaciones del "mejor modelo" y sus $t-values$, muestran un estimado del intercepto (`precioventa`) con valor positivo $> 0$ (19.7); de manera que de estos resultados se puede deducir que algunos estimadores de las variables regresoras, pueden afectar el resultado de la variable respuesta. Al verificar los $t-values$ se observa que solo son significativas nuevamente `num_banos` y `num_puestos_gar`	($p - value < 0.05$). Las demás variables regresoras utilizadas en  este modelo no son significativas ($p - value \geq 0.05$), por lo tanto, no es posible establecer que puedan tener efecto alguno sobre la variable respuesta. De acá se se puede inferir que un incremento en una unidad del numero de baños se puede incrementar 5.7/1000 dolares el precio de venta de la propiedad siempre que las otras variables no cambien y/o que un incremento en una unidad del numero de puestos de garaje se puede incrementar 0.575/1000 dolares el precio de venta de la propiedad, de igual manera siempre que las otras variables no cambien. 
+
+```{r F de fisher para el mejor modelo, echo=FALSE, message=FALSE, results='asis'}
+FstatBSTmodel <- c(mods_bestAIC$fstatistic[1], mods_bestAIC$fstatistic[3], '2.899e-07')
+FstatBSTmodelcomp <- data.frame(matrix(nrow = 1, data = FstatBSTmodel))
+colnames(FstatBSTmodelcomp) <- c('$F_{stat}$', 'Grados_libertad', '$p-value$')
+
+pandoc.table(FstatBSTmodelcomp, caption = 'Estadistico $F$ de Fisher: significancia del mejor modelo', align = 'r')
+```
+Al probar la significancia del "mejor modelo" se estableción nuevamente una prueba de hipotesis de la siguiente manera:
+
+$$
+H_o: \beta_1 = \beta_2 =  ... =\beta_k = 0 \\ 
+$$
+
+$$
+H_1: \beta_j \neq 0 \ para \ cualquier  \ j \ dado
+$$
+
+la tabla 7 muestra los resultaos para el estadístico $F$ de Fisher con 18 grados de libertad, donde el $p-value$ demuestra significancia estadística ($p - value < 0.05$), con lo que se rechaza la hipotesis nula. De tal forma, se puede inferir que almenos una de la variables regresoras ($\beta_i$) son diferentes de 0. 
+
+
+```{r Tabla de r2 y  r2 bestmodel adj, echo = FALSE, results='asis'}
+R_2vectPPbst <-c(mods_bestAIC$r.squared, mods_bestAIC$adj.r.squared)
+NamesR2 <- c('$R^2$', '$R_{adj}^2$')
+R_2modtabPPbst <- data.frame(matrix(nrow = 1,data = R_2vectPPbst))
+colnames(R_2modtabPPbst) <- NamesR2
+pandoc.table(R_2modtabPPbst, 
+             caption = '$R^2$ y $R_{adj}^2$ para el modelo', 
+             align = 'c', 
+             split.table = Inf,
+             digits = 3)
+```
+
+De otra parte, la tabla 8, muestra los resultados de los $R^2$ y $R_{adj}^2$ para el "modelo de regresión original"mejor modelo". Estos resultados son más consistentes que el modelo original ($R^2 \approx  R_{adj}^2$) e incluso como era de esperarse por el resultado del estadistico para selección de mejor modelo $R_{adj}^2$, su resultado es mayor con respecto al resultado del modelo orginal ($R_{adj}^2\ mejor\ modelo  = 0.828 > R_{adj}^2\ modelo\ original = 0.789$). De esto se puede inferir que aproximadamente el 83% de la variabilidad de la variable respuesta (`precioventa`) puede ser explicado por las variables regresoras del "mejor modelo" y la variabilidad restante puede ser consecuencia a otras variables no tenidas encuenta en el modelo o por azar. 
+
+
+### Pregunta 6: Construya e interprete un gráfíco de residuales contra la respuesta estimada. Es sensato pensar que el modelo cumple los supuestos? Verifíque esto a un nivel de signifícancia del 5%
+
+Para validar el "mejor modelo" de regresión, se realizó un análisis de los residuales para dicho modelo. Para realizar esto se tomaron únicamente los residuales estudentizados Externamente (para efectos prácticos solo se designaran como *residuales estudentizados*). 
+
+```{r análisis de residuales para el mejor modelo, include=FALSE}
+
+### RESIDUALES
+###residuales ordinarios
+ordinariosPP <- residuals(bestmodelp)
+
+###residuales stidentizados internamente
+estandarizados_intPP <- rstandard(bestmodelp)
+
+##residuales studentizados externamente (ESTOS SON LOS QUE SE UTILIZAN)
+R.Estudentizados <- rstudent(bestmodelp)
+
+```
+
+```{r gráficos de variables residuales por variable, include=FALSE}
+
+### gráficos de residuales
+
+plot2 <- ggplot(data = bestmodelp, aes(impuestos, R.Estudentizados)) +
+    geom_point() + geom_smooth(color = "firebrick") + geom_hline(yintercept = 0) +
+    theme_minimal() + ylab('Residuales')
+plot3 <- ggplot(data = bestmodelp, aes(num_banos, R.Estudentizados)) +
+    geom_point() + geom_smooth(color = "firebrick") + geom_hline(yintercept = 0) +
+    theme_minimal() + ylab('Residuales')
+plot4 <- ggplot(data = bestmodelp, aes(num_puestos_gar, R.Estudentizados)) +
+    geom_point() + geom_smooth(color = "firebrick") + geom_hline(yintercept = 0) +
+    theme_minimal() + ylab('Residuales')
+plot5 <- ggplot(data = bestmodelp, aes(edad_hogar, R.Estudentizados)) +
+    geom_point() + geom_smooth(color = "firebrick") + geom_hline(yintercept = 0) +
+    theme_minimal() + ylab('Residuales')
+plot6 <- ggplot(data = bestmodelp, aes(cant_chimen, R.Estudentizados)) +
+    geom_point() + geom_smooth(color = "firebrick") + geom_hline(yintercept = 0) +
+    theme_minimal() + ylab('Residuales')
+
+```
+
+
+```{r distribución de los resdiuos, echo=FALSE, message=FALSE, fig.cap='Distribución de los residuales estudentizados', fig.width= 6, fig.height=4}
+pricepp$prediccion <- bestmodelp$fitted.values
+
+DisresPP<- ggplot(data = pricepp, aes(x = prediccion, y = R.Estudentizados)) +
+    geom_point(aes(color = R.Estudentizados)) +
+    scale_color_gradient2(low = "blue3", mid = "grey", high = "red") +
+    geom_segment(aes(xend = prediccion, yend = 0), alpha = 0.5, linetype= 2) +
+    geom_smooth(color = "firebrick", size=0.3) +
+  xlab("Predicción del mejor modelo")+
+  ylab("Residuos estudentizados") +
+    geom_hline(yintercept = 0) +
+  theme_minimal()
+DisresPP
+```
+
+
+la validación de los supuestos para la regresión, a saber:
+
+
+* Relación entre residuales estudentiados obtenidos y los predichos o esperados: $\epsilon_i = 0$.  
+
+* La distribución de los residuos esperados se distribuyen normalemnte: $\epsilon_i \approx N(\mu =0, var=\sigma^2)$.  
+
+* Homocedasticidad: $var(\epsilon_i) = \sigma^2$.
+
+* No hay autocorrelación: $corr(\epsilon_i, \epsilon_j) = 0$. 
+
+
+Inicialmente se evaluó la premisa $\epsilon_i = 0$. La figura 4, muestra que hay cierta variabilidad entre las relaciones, dadas por algunas observaciones extremas que se alejan de 0. 
+
+```{r curvas de distribución de residuos por variable, echo=FALSE, message=FALSE, fig.cap='Distribuciones de residuales estudentizados para cada variable del mejor modelo', fig.width= 6, fig.height=4}
+grid.arrange(plot2, plot3, plot4, plot5, plot6)
+
+```
+
+Además se realizó se realizó una discriminación por variable dada (figura 5), evaluando las relaciones entre los residuales estudentizados y los esperados encontrando que la variable `cant_chimenea`es la que menos se encuentra relación y `num_banos`es la donde la relación es mayor ($\approx 0$). Las variables con mayor variabilidad en su relación son `impuestos`y `edad_hogar`. 
+
+```{r gráfica para distribución de residuales, echo=FALSE, message=FALSE, fig.cap='Histograma de distribución de los residuales', fig.width= 5, fig.height=4}
+plothist <- ggplot(data = bestmodelp, aes(R.Estudentizados)) + 
+    xlab('Residuales Estudentizados')+
+    ylab('Conteo')+
+    stat_function(fun = dnorm, 
+                n = 24, 
+                args = list(mean = 0, sd = 1), 
+                size = 1, 
+                linetype = 'dashed')+
+    #geom_freqpoly(aes(R.Estudentizados), 
+                  #data = bestmodelp, 
+                  #color = 'darkblue', 
+                  #binwidth = 0.21, 
+                  #linetype = 2,
+                  #size =1, 
+                  #alpha=0.5)+
+    geom_histogram(fill='gray20', alpha=0.4)+
+    geom_density(colour='firebrick', size=0.5, linetype='dotted', fill='firebrick', alpha=.25) + theme_minimal()
+  
+  plothist
+```
+
+
+```{r qqplot para distribuciones de residuales, echo=FALSE, message=FALSE, fig.cap='Q-Q Plot: residuales estudentizados', fig.width= 5, fig.height=4}
+qqplotPP <- ggplot(bestmodelp, aes(sample = R.Estudentizados))+ 
+  xlab('Teórico')+
+  ylab('Muestra')+
+  stat_qq(size=2, colour='gray20') + 
+  stat_qq_line(colour='darkred', 
+               size=1) +
+  theme_minimal()
+qqplotPP
+```
+
+Seguidamente se evaluó la premisa: $\epsilon_i \approx N(\mu =0, var=\sigma^2)$, incialmente a través de un gráfico de distribución  de los residuales estudentizados (figura 6 y 7 respectivamente). En la figura 6 se muestra que a distribución de los residuales estudentizados (linea y sombreado rojo) es levemente asimétrica con una desviación hacia la derecha con respecto a una curva de normalidad (linea negra entrecortada) que cumple con los parametros de la premisa a validar. Por su parte, la figura 7 muestra que las observaciones finales se alejan de la linea central (roja) sugiriendo que estas observaciones son las que pueden estár moviendo la distribución. 
+
+```{r test de shapiro-wilk para normalidad, echo=FALSE, message=FALSE, results='asis'}
+shapiroWtB <- shapiro.test(R.Estudentizados)
+NamesSW <- c('$W$', '$p-value$')
+shapirowtdb <- data.frame(matrix(nrow = 1, c(shapiroWtB$statistic, shapiroWtB$p.value)))
+colnames(shapirowtdb) <- NamesSW
+pandoc.table(shapirowtdb, 
+             caption = 'Test de shapiro-wilk (w) para los residuales', 
+             align = 'c', 
+             split.table = Inf,
+             digits = 4)
+```
+
+Para comprar la normalidad de los residuales estudentizados se decidió comprobar a través de un test de Shapiro-Wilk, el cual permite constatar la normalidad del conjunto de observaciones, y se formula de la siguiente manera (donde $N$ indica una distribución normal: 
+
+$$
+H_o: el\ conjunto \ de\ datos = N
+$$
+
+$$
+H_1: el\ conjunto \ de\ datos \neq N 
+$$
+El resultado obtenido de este estadístico es presentado en la tabla 10, mostrando que su resultado No tiene significancia ($p - value < 0.05$). Por esta razón, no es posible rechazar la hipotesis nula, así que se puede aseverar que los residuales estudentizados siguen una distribución normal ($N$), por lo cual se valida $\epsilon_i \approx N(\mu =0, var=\sigma^2)$. 
+
+```{r test de Breusch-pagan para detección de varianza, echo=FALSE, message=FALSE, results='asis'}
+BreuschPtB <- bptest(bestmodelp)
+BreuschPtB$parameter
+NamesBP <- c('$BP$', 'Grados_libertad', '$p-value$')
+BreuschPtBdb <- data.frame(matrix(nrow = 1, c(BreuschPtB$statistic, BreuschPtB$parameter, BreuschPtB$p.value)))
+colnames(BreuschPtBdb) <- NamesBP
+pandoc.table(BreuschPtBdb, 
+             caption = 'Test de Breusch-Pagan (BP) para los residuales', 
+             align = 'c', 
+             split.table = Inf,
+             digits = 4)
+```
+
+Para evaluar si existe homocedasticidad ($var(\epsilon_i) = \sigma^2$) en los residuales estandarizados, se recurrió a realizar un test de Breusch-Pagan, el cual establece si la varianza estimada dependen de las observaciones de manera independiente, se supone homocedasticidad en cuando no hay esta dependecia, y heterocedasticidad en cuanto si existe esta dependencia. Esto se establece de la siguiente forma: 
+
+
+$$
+H_o: hay \ homocedasticidad
+$$
+
+$$
+H_1: hay \ heterocedasticidad 
+$$
+El resultado obtenido del test de Breusch-Pagan es presentado en la tabla 11, mostrando que su resultado No tiene significancia ($p - value < 0.05$). Por esta razón, no es posible rechazar la hipotesis nula, así que se puede aseverar que los hay homocedasticidad, es decir la varianza no depende de las observaciones independientes sino deel modelo en su totalidad, por lo cual se valida ($var(\epsilon_i) = \sigma^2$). 
+
+
+```{r test de Durbin–Watson para detección de autocorrelación, echo=FALSE, message=FALSE, results='asis'}
+DurbinWtB <- dwtest(bestmodelp)
+
+NamesDW <- c('$DW$', '$p-value$')
+DurbinWtBdb <- data.frame(matrix(nrow = 1, c(DurbinWtB$statistic, DurbinWtB$p.value)))
+colnames(DurbinWtBdb) <- NamesDW
+pandoc.table(DurbinWtBdb, 
+             caption = 'Test de Durbin–Watson (DW) para los residuales', 
+             align = 'c', 
+             split.table = Inf,
+             digits = 4)
+```
+
+
+Finalmente, Para evaluar si existe autocorrelación $corr(\epsilon_i, \epsilon_j) = 0$ entre los residuales estandarizados, se recurrió a realizar un test de Durbin–Watson, el cual establece que si la autocorrelación designada con el simbolo $\rho$ es igual a 0 ($\rho = 0$) entonces las observaciones no están autocorrelacionados, en cambio si existe autocorrelación ($\rho \neq 0$) entonces algunas de las observaciones están correlacionadas . Esto se establece de la siguiente forma: 
+
+
+$$
+H_o: \rho = 0
+$$
+
+$$
+H_1: \rho \neq 0 
+$$
+La tabla 12 muestra los resultados del test de Durbin–Watson. Este muestra que No existe significancia ($p - value < 0.05$). Por esta razón, no es posible rechazar la hipotesis nula, así que se puede aseverar que los residuales estudentizados no se encuentran correlacionados entre ellos. 
+
+### Pregunta #7: Realice un análisis de diagnóstico e identifíue (si es que existen) observaciones con alto leverage, incluyentes y extremas en la respuesta.
+
+La figura 8, 9 y 10 corresponden al análisis de los residuales estudentizados para evaluar el efecto de cada una de las observaciones en el mejor modelo de regresión encontrado por los métodos y estadísticos previamente descritos. 
+
+```{r residuals LEVERAGE para bestmodel, echo=FALSE, message=FALSE, fig.cap='Evaluación de altos *leverage* para el mejor modelo', fig.width= 6, fig.height=4}
+Leverage.graph(bestmodelp)
+```
+
+La figura 8, en el eje $x$ muesta el número de la observación o (índice) y la $y$ los valores correspondientes la diagonal de la matriz H obtenida de los residuales estudentizados y predichos. la linea azul traza el punto donde los valores de la diagonal en H son dos veces la media de estos valores. Como se puede evidenciar la observación número 15 y 17 son superiores a dos veces la media de los valores en H, de manera que se consideran valores con alto *leverage* (o apalancamiento), es decir que estas observaciones pueden afectar la regresión. 
+
+
+```{r observaciones EXTREMAS para bestmodel, echo=FALSE, message=FALSE, fig.cap='Evaluación de observaciones extremas para el mejor modelo', fig.width= 6, fig.height=4}
+Resobsext.graph(bestmodelp)
+```
+
+La figura 9, en el eje $x$ muestra a la media estimada de los residuales estimados por el modelo, y $y$ los valores correspondientes a los valores que toman los residuales estudentizados. la linea azul traza el punto 0 y las lineas rojas entre cortadas, las desviaciones estandar de los residuales estudentizados (2 y -2 sd). Como se puede evidenciar la observación número 24 esta fuera de dos deviaciones estandar por lo cual de considera una observación extrema y se debe evaluar si es influyente. 
+
+```{r observaciones influyentes para bestmodel, echo=FALSE, message=FALSE, fig.cap='Evaluación de observaciones influyentes para el mejor modelo', fig.width= 6, fig.height=4}
+Obs_influy.graph(bestmodelp)
+```
+
+Finalmente la figura 10, en el eje $x$ muesta el número de la observación o (índice), y $y$ los valores correspondientes a las distancias de Cook, que evaluan la influencia de las observaciones en el modelo. la linea azul traza el valor que corresponde la desviación 3 veces de promedio de los residuales estudentizados. Como se puede evidenciar la observación número 17 es la observación más influyente en el modelo además que ejerce *leverage* de manera que sería conveniente sustraer esta observación y evaluar nuevamente su efecto en el modelo. 
+
+## Evaluación de mejor modelo sin la observación influyente
+
+### Análisis de estimadores y $t-values$ mejor modelo excluyendo observación influyente #17
+
+La  tabla 12 presenta las estimaciones del "mejor modelo" excluyendo observación influyente y sus $t-values$. Allí se evidencia un estimado del intercepto (`precioventa`) con valor positivo $> 0$ (20.2); de manera que de estos resultados se puede deducir que algunos estimadores de las variables regresoras, pueden afectar el resultado de la variable respuesta. Al verificar los $t-values$ se observa que solo son significativas nuevamente `num_banos` al igual que el modelo original	($p - value < 0.05$). Las demás variables regresoras utilizadas en  este modelo no son significativas ($p - value \geq 0.05$), así pues, no es posible establecer que puedan tener efecto alguno sobre la variable respuesta. De acá se se puede inferir que un incremento en una unidad del numero de baños se puede incrementar 6.08/1000 dolares el precio de venta de la propiedad siempre que las otras variables no cambien. 
+
+```{r modelo sin observación 17, echo=FALSE, message=FALSE, results='asis'}
+### mejor modelo con método stepwise
+extrac_obsinfl <- Obs_influ.extract(bestmodelp)
+pricepp17 <- pricepp[-extrac_obsinfl,]
+
+bestmodel17 <- lm(formula = precioventa ~ impuestos + num_banos + num_puestos_gar + 
+       edad_hogar + cant_chimen, data = pricepp17)
+
+### elegir el mejor modelo 
+mods_bestAIC17 <- summary(bestmodel17)
+ParMods_bestAIC17 <- data.frame(mods_bestAIC17$coefficients)
+colnames(ParMods_bestAIC17) <- c("Estimado", "ErrorStand", "$t-value$", "$p-value$")
+
+
+pandoc.table(ParMods_bestAIC17, 
+             caption= paste('Estimadores, $t-values$ y significancia para el \nmejor
+                            modelo sugerido por AIC, Cp, y $r^2_{adj}$'), 
+             align = 'c', 
+             digits = 3)
+```
+
+La tabla 13 muestra los resultados para el estadístico $F$ de Fisher con 17 grados de libertad, donde el $p-value$ demuestra significancia estadística ($p - value < 0.05$), con lo que se rechaza la hipotesis nula. De tal forma, se puede inferir que almenos una de la variables regresoras ($\beta_i$) son diferentes de 0. 
+
+La tabla 14, muestra los resultados de los $R^2$ y $R_{adj}^2$ para el "modelo de regresión original"mejor modelo" sin observación influyente. De esto se puede inferir que aproximadamente el 81% de la variabilidad de la variable respuesta (`precioventa`) puede ser explicado por las variables regresoras del "mejor modelo" y la variabilidad restante puede ser consecuencia a otras variables no tenidas encuenta en el modelo o por azar. 
+
+
+```{r F de fisher para el mejor menos 17, echo=FALSE, message=FALSE, results='asis'}
+FstatBSTmodel17 <- c(mods_bestAIC17$fstatistic[1], mods_bestAIC17$fstatistic[3], '1.275e-06')
+FstatBSTmodelcomp17 <- data.frame(matrix(nrow = 1, data = FstatBSTmodel17))
+colnames(FstatBSTmodelcomp17) <- c('$F_{stat}$', 'Grados_libertad', '$p-value$')
+
+pandoc.table(FstatBSTmodelcomp17, caption = 'Estadistico $F$ de Fisher: significancia del mejor modelo', align = 'r')
+```
+
+
+```{r Tabla de r2 y  r2 bestmodel menos 17, echo = FALSE, results='asis'}
+R_2vectPPbst17 <-c(mods_bestAIC17$r.squared, mods_bestAIC17$adj.r.squared)
+NamesR217 <- c('$R^2$', '$R_{adj}^2$')
+R_2modtabPPbst17 <- data.frame(matrix(nrow = 1,data = R_2vectPPbst17))
+colnames(R_2modtabPPbst17) <- NamesR217
+pandoc.table(R_2vectPPbst17, 
+             caption = '$R^2$ y $R_{adj}^2$ para el modelo', 
+             align = 'c', 
+             split.table = Inf,
+             digits = 3)
+```
+
+### Análisis de residuales del mejor modelo excluyendo observación influyente #17
+
+La figura 11, 12 y 13 corresponden al análisis de los residuales estudentizados para evaluar el efecto de cada una de las observaciones en el mejor modelo excluyendo la observación influyente del "mejor modelo". A partir de esto es de notar que la observación 23 aparece como extrema e influyente pero sin alto *leverage*. En su lugar, presentan alto *leverage* la observación 15 y 22. De estas la observación 15 previamente había presentado alto *leverage* en el "mejor modelo", sin embargo, aparece en este modelo como no influyente. 
+
+```{r residuals LEVERAGE para bestmodel sin 17, echo=FALSE, message=FALSE, fig.cap='Evaluación de altos *leverage* para el mejor modelo sin observación influyente', fig.width= 6, fig.height=4}
+Leverage.graph(bestmodel17)
+```
+
+```{r observaciones EXTREMAS para bestmodel sin 17, echo=FALSE, message=FALSE, fig.cap='Evaluación de observaciones extremas para el mejor modelo sin observación influyente', fig.width= 6, fig.height=4}
+Resobsext.graph(bestmodel17)
+```
+
+```{r observaciones influyentes para bestmodel sin 17, echo=FALSE, message=FALSE, fig.cap='Evaluación de observaciones influyentes para el mejor modelo sin observación influyente', fig.width= 6, fig.height=4}
+Obs_influy.graph(bestmodel17)
+```
+
+
+# Anexo (mejor modelo por BIC)
+## Se realizó mejor modelo por $BIC$ con dos variables regresoras `impuestos` y `num_banos`, con todas las observaciones.
+
+### EStimadores y $t-values$ para el mejor modelo por BIC
+
+
+La  tabla 15 presenta las estimaciones del "mejor modelo por BIC" y sus $t-values$. Allí se evidencia un estimado del intercepto (`precioventa`) con valor positivo $> 0$ (13.1); de manera que de estos resultados se puede deducir que algunos estimadores de las variables regresoras, pueden afectar el resultado de la variable respuesta. Al verificar los $t-values$ se observa que solo es significativa la variable  `impuestos`. En este caso la variable `num_banos`que había sido significativa en los otros dos modelos es no son significativas ($p - value \geq 0.05$) en este. Por esto, se puede establecer que `impuestos` puedan tener efecto alguno sobre la variable respuesta. De acá se se puede inferir que un incremento en una unidad de impuestos se puede incrementar 2.71/1000 dolares el precio de venta de la propiedad siempre que las otras variables no cambien. 
+
+```{r elección del modelo por métodos BIC, echo=FALSE, message=FALSE, results= 'asis'}
+### mejor modelo con método stepwise
+bestmodelBIC <- lm(formula = precioventa ~ impuestos + num_banos, data = pricepp)
+Mods_bestBIC <- summary(bestmodelBIC)
+ParMods_bestBIC <- data.frame(Mods_bestBIC$coefficients)
+colnames(ParMods_bestBIC) <- c("Estimado", "ErrorStand", "$t-value$", "$p-value$")
+
+
+pandoc.table(ParMods_bestBIC, 
+             caption= paste('Estimadores, $t-values$ y significancia para el \nmejor
+                            modelo sugerido por BIC$'), 
+             align = 'c', 
+             digits = 3)
+```
+
+La tabla 16 muestra los resultados para el estadístico $F$ de Fisher con 21 grados de libertad, donde el $p-value$ demuestra significancia estadística ($p - value < 0.05$), con lo que se rechaza la hipotesis nula. De tal forma, se puede inferir que almenos una de la variables regresoras ($\beta_i$) son diferentes de 0. 
+
+La tabla 17, muestra los resultados de los $R^2$ y $R_{adj}^2$ para el "modelo de regresión original "mejor modelo por BIC". De esto se puede inferir que aproximadamente el 78% de la variabilidad de la variable respuesta (`precioventa`) puede ser explicado por las variables regresoras del "mejor modelo por BIC" y la variabilidad restante puede ser consecuencia a otras variables no tenidas encuenta en el modelo o por azar. Esto es esperado por que el resultado del estadístico $R_{adj}^2$ para selección de modelo daba como mejor el seleccionado como "mejor modelo" o sea el modelo de 5 variables. 
+
+```{r F de fisher para el mejor BIC, echo=FALSE, message=FALSE, results='asis'}
+FstatBSTmodelBIC <- c(Mods_bestBIC$fstatistic[1], Mods_bestBIC$fstatistic[3], '4.007e-08')
+FstatBSTmodelcompBIC <- data.frame(matrix(nrow = 1, data = FstatBSTmodelBIC))
+colnames(FstatBSTmodelcompBIC) <- c('$F_{stat}$', 'Grados_libertad', '$p-value$')
+
+pandoc.table(FstatBSTmodelcompBIC, caption = 'Estadistico $F$ de Fisher: significancia del mejor modelo por $BIC$', align = 'r')
+```
+
+
+```{r Tabla de r2 y  r2 mejor BIC, echo = FALSE, results='asis'}
+R_2vectPPbstBIC <-c(Mods_bestBIC$r.squared, Mods_bestBIC$adj.r.squared)
+NamesR217 <- c('$R^2$', '$R_{adj}^2$')
+R_2modtabPPbstBIC <- data.frame(matrix(nrow = 1,data = R_2vectPPbstBIC))
+colnames(R_2modtabPPbstBIC) <- NamesR217
+pandoc.table(R_2modtabPPbstBIC, 
+             caption = '$R^2$ y $R_{adj}^2$ para el mejor modelo por $BIC$', 
+             align = 'c', 
+             split.table = Inf,
+             digits = 3)
+```
+
+
+```{r obtencion de residuales del modelo por $BIC$ menos 17, include=FALSE}
+
+##residuales studentizados externamente (ESTOS SON LOS QUE SE UTILIZAN)
+R.Estudentizados_por_BIC <- rstudent(bestmodelBIC)
+
+```
+
+### Validación del mejor modelo $BIC$
+
+Para determinar la validez del mejor modelo obtenido por $BIC$ se evaluaron los 
+mismos parametros que el modelo original. 
+
+Inicialmente se evaluó la premisa $\epsilon_i = 0$. La figura 14, muestra que hay cierta variabilidad entre las relaciones, dadas por algunas observaciones extremas que se alejan de 0 al igual que el "mejor modelo" obtenido por otros estadísticos. 
+
+```{r distribución de los resdiuos por BIC, echo=FALSE, message=FALSE, fig.cap='Distribución de los residuales estudentizados del modelo por $BIC$', fig.width= 6, fig.height=4}
+prediccionBIC <- bestmodelBIC$fitted.values
+
+DisresPPBIC<- ggplot(data = pricepp, aes(x = prediccionBIC, 
+                                      y = R.Estudentizados_por_BIC)) +
+    geom_point(aes(color = R.Estudentizados_por_BIC)) +
+    scale_color_gradient2(low = "blue3", mid = "grey", high = "red") +
+    geom_segment(aes(xend = prediccionBIC, yend = 0), alpha = 0.5, linetype= 2) +
+    geom_smooth(color = "firebrick", size=0.3) +
+  xlab("Predicción del mejor modelo")+
+  ylab("Residuos estudentizados") +
+    geom_hline(yintercept = 0) +
+  theme_minimal()
+DisresPPBIC
+```
+
+A continuación se evaluó la premisa: $\epsilon_i \approx N(\mu =0, var=\sigma^2)$, incialmente a través de un gráfico de distribución  de los residuales estudentizados (figura 15), este muestra que a distribución de los residuales estudentizados para este modelo (linea y sombreado rojo) continua levemente asimétrica con una desviación hacia la derecha con respecto a una curva de normalidad (linea negra entrecortada) que cumple con los parametros de la premisa a validar, caso similar a lo ocurrido en el "mejor modelo" de 5 variables.
+
+```{r gráfica para distribución de residuales por BIC, echo=FALSE, message=FALSE, fig.cap='Histograma de distribución de los residuales del modelo por $BIC$', fig.width= 5, fig.height=4}
+plothistBIC <- ggplot(data = bestmodelBIC, aes(R.Estudentizados_por_BIC)) + 
+    xlab('Residuales Estudentizados')+
+    ylab('Conteo')+
+    stat_function(fun = dnorm, 
+                n = 24, 
+                args = list(mean = 0, sd = 1), 
+                size = 1, 
+                linetype = 'dashed')+
+    #geom_freqpoly(aes(R.Estudentizados_por_BIC), 
+                  #data = bestmodelBIC, 
+                  #color = 'darkblue', 
+                  #binwidth = 0.21, 
+                  #linetype = 2,
+                  #size =1, 
+                  #alpha=0.5)+
+    geom_histogram(fill='gray20', alpha=0.4)+
+    geom_density(colour='firebrick', size=0.5, linetype='dotted', fill='firebrick', alpha=.25) + theme_minimal()
+  
+  plothistBIC
+```
+
+
+```{r test de shapiro-wilk para normalidad del modelo por $BIC$, echo=FALSE, message=FALSE, results='asis'}
+shapiroWtBBIC <- shapiro.test(R.Estudentizados_por_BIC)
+NamesSWBIC <- c('$W$', '$p-value$')
+shapirowtdbBIC <- data.frame(matrix(nrow = 1, c(shapiroWtBBIC$statistic, shapiroWtBBIC$p.value)))
+colnames(shapirowtdbBIC) <- NamesSWBIC
+pandoc.table(shapirowtdbBIC, 
+             caption = 'Test de shapiro-wilk (w) para los residuales', 
+             align = 'c', 
+             split.table = Inf,
+             digits = 4)
+```
+
+La tabla 18, muestra el resultado del test de shapiro-Wilk cuyo resultado No tiene significancia ($p - value < 0.05$). Por esta razón, no es posible rechazar la hipotesis nula, así que se puede aseverar que los residuales estudentizados para este modelo obtenido por $BIC$ siguen una distribución normal ($N$), por lo cual se valida $\epsilon_i \approx N(\mu =0, var=\sigma^2)$. 
+
+```{r test de Breusch-pagan para detección de varianza del modelo por $BIC$, echo=FALSE, message=FALSE, results='asis'}
+BreuschPtBBIC <- bptest(bestmodelBIC)
+
+NamesBPBIC <- c('$BP$', 'Grados_libertad', '$p-value$')
+BreuschPtBdbBIC <- data.frame(matrix(nrow = 1, c(BreuschPtBBIC$statistic, BreuschPtBBIC$parameter, BreuschPtBBIC$p.value)))
+colnames(BreuschPtBdbBIC) <- NamesBPBIC
+pandoc.table(BreuschPtBdbBIC, 
+             caption = 'Test de Breusch-Pagan (BP) para los residuales', 
+             align = 'c', 
+             split.table = Inf,
+             digits = 4)
+```
+
+La tabla 19, muestra el resultado del test de Breusch-pagan cuyo resultado No tiene significancia ($p - value < 0.05$). Por esta razón, no es posible rechazar la hipotesis nula, así que se puede aseverar que los hay homocedasticidad, es decir la varianza no depende de las observaciones independientes sino deel modelo en su totalidad, por lo cual se valida ($var(\epsilon_i) = \sigma^2$). 
+
+
+```{r test de Durbin–Watson para detección de autocorrelación del modelo por $BIC$, echo=FALSE, message=FALSE, results='asis'}
+DurbinWtBBIC <- dwtest(bestmodelBIC)
+
+NamesDWBIC <- c('$DW$', '$p-value$')
+DurbinWtBdbBIC <- data.frame(matrix(nrow = 1, c(DurbinWtBBIC$statistic, DurbinWtBBIC$p.value)))
+colnames(DurbinWtBdbBIC) <- NamesDWBIC
+pandoc.table(DurbinWtBdbBIC, 
+             caption = 'Test de Durbin–Watson (DW) para los residuales', 
+             align = 'c', 
+             split.table = Inf,
+             digits = 4)
+```
+
+
+La tabla 20, muestra el resultado del test de Durbin–Watson cuyo resultado No tiene significancia ($p - value < 0.05$).Por esta razón, no es posible rechazar la hipotesis nula, así que se puede aseverar que los residuales estudentizados para el modelo obtenido por no se encuentran correlacionados entre ellos. 
+
+
+### Análisis de residuales del mejor modelor $BIC$
+
+La figura 16, 17 y 18 corresponden al análisis de los residuales estudentizados para evaluar el efecto de cada una de las observaciones en el mejor modelo producido por el estadístico $BIC$. A partir de estos resultados, es importante notar que la observación 17 al igual que el "mejor modelo" de 5 variables, presenta alto *leverage* y es influyente. Además llama la atención que la observación 15 previamente había presentado alto *leverage* en el "mejor modelo" aparece en este modelo como una observación influyente. Además la observación # 15 presenta alto *leverage* en el "mejor modelo" sin observación influyente (figura 12) de manera que es importante proponer un modelo que excluya esta observación. Para este nuevo modelo no se obtienen observaciones etremas. 
+
+```{r residuals LEVERAGE para mejor modelo por BIC, echo=FALSE, message=FALSE, fig.cap='Evaluación de altos *leverage* para el mejor modelo por BIC', fig.width= 6, fig.height=4}
+Leverage.graph(bestmodelBIC)
+```
+
+```{r observaciones EXTREMAS para mejor modelo por BIC, echo=FALSE, message=FALSE, fig.cap='Evaluación de observaciones extremas para el mejor modelo por BIC', fig.width= 6, fig.height=4}
+Resobsext.graph(bestmodelBIC)
+```
+
+```{r observaciones influyentes para mejor modelo por BIC, echo=FALSE, message=FALSE, fig.cap='Evaluación de observaciones influyentes para el mejor modelo por BIC', fig.width= 6, fig.height=4}
+Obs_influy.graph(bestmodelBIC)
+```
+
